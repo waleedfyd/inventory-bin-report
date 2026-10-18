@@ -1,6 +1,130 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#07548e"><title>Bin Location Scanner</title><style>
-*{box-sizing:border-box}body{margin:0;background:#eef5fb;color:#18344a;font-family:Arial,'Segoe UI',sans-serif;padding:14px}.app{max-width:720px;margin:0 auto;background:#fff;border:1px solid #cddfec;border-radius:14px;padding:18px;box-shadow:0 2px 12px #143b5d0a}h1{font-size:23px;color:#07548e;margin:0 0 8px}p{line-height:1.5;color:#587185}.search{display:flex;gap:8px;flex-wrap:wrap;margin-top:18px}input{flex:1;min-width:180px;padding:14px;border:1px solid #a9c1d5;border-radius:8px;font-size:18px;text-transform:uppercase}button{border:0;border-radius:8px;padding:13px 16px;color:white;font-weight:700;background:#0b73cf;cursor:pointer;font-size:15px}button.secondary{background:#70879b}button:disabled{opacity:.6}#status{margin:12px 0;font-size:14px;min-height:20px}#videoBox{display:none;margin-top:14px}video{width:100%;background:#111;border-radius:10px;max-height:55vh}#result{padding:16px;background:#eaf4fd;border-radius:10px;margin-top:14px;display:none}#result strong{font-size:23px;overflow-wrap:anywhere}small{color:#698096}#report{margin-top:12px;border:1px dashed #cbdceb;border-radius:10px;padding:16px;color:#5b7285}#report h2{font-size:18px;color:#07548e;margin:0 0 6px}
-</style></head><body><main class="app"><h1>📍 Bin Location Stock Report</h1><p>Scan a bin barcode using your phone camera or an external scanner. This is a safe camera test page; no warehouse stock data is published here.</p><div class="search"><input id="bin" aria-label="Bin location" placeholder="Scan or enter bin location" autocomplete="off" autocapitalize="characters"><button id="camera" type="button">📷 Scan Camera</button></div><div id="status" role="status">Ready to scan.</div><div id="videoBox"><video id="video" autoplay playsinline muted></video><button type="button" id="stop" class="secondary">Close Camera</button></div><div id="result"><small>Scanned bin location</small><div><strong id="value"></strong></div></div><section id="report"><h2>Stock Report</h2><div id="reportMessage">Connect a private inventory data source to display item balances and carton details. No stock data is stored on this public page.</div></section></main><script>
-(()=>{'use strict';const $=id=>document.getElementById(id);let stream=null,active=false,frame=0,detecting=false;const status=(s,bad=false)=>{$('status').textContent=s;$('status').style.color=bad?'#b42c32':'#52758c'};function setBin(value){const code=String(value||'').trim().toUpperCase();if(!code)return; $('bin').value=code;$('value').textContent=code;$('result').style.display='block';status('Bin barcode captured: '+code);$('reportMessage').textContent='Bin '+code+' selected. Stock balances will appear here after connecting a private data source.';}function stop(){active=false;if(frame)cancelAnimationFrame(frame);frame=0;if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}const v=$('video');v.pause();v.srcObject=null;$('videoBox').style.display='none';$('camera').disabled=false;}async function start(){if(active)return;if(!window.isSecureContext){status('Camera requires HTTPS. Open this page from its github.io URL.',true);return;}if(!navigator.mediaDevices?.getUserMedia){status('Camera API is not available in this browser.',true);return;}if(!('BarcodeDetector' in window)){status('This browser does not support built-in barcode detection. Try Chrome on Android, or use a USB/Bluetooth scanner.',true);return;}let detector;try{detector=new BarcodeDetector({formats:['code_128','code_39','qr_code','ean_13','ean_8','itf','data_matrix','codabar']});}catch(e){status('Barcode detection is unavailable: '+e.message,true);return;}try{$('camera').disabled=true;stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}},audio:false});const v=$('video');v.srcObject=stream;$('videoBox').style.display='block';await v.play();active=true;status('Point the camera at the bin location barcode.');let last=0;async function scan(t){if(!active)return;if(!detecting&&t-last>=160){last=t;detecting=true;try{const hits=await detector.detect(v);if(hits.length){setBin(hits[0].rawValue);stop();return;}}catch(e){/* frame not ready */}finally{detecting=false;}}if(active)frame=requestAnimationFrame(scan);}frame=requestAnimationFrame(scan);}catch(e){stop();status('Unable to open camera: '+(e.name==='NotAllowedError'?'Permission denied. Allow camera access for this site in Chrome settings.':e.message),true);}}$('camera').addEventListener('click',start);$('stop').addEventListener('click',stop);$('bin').addEventListener('change',e=>setBin(e.target.value));$('bin').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();setBin(e.target.value);e.target.select();}});document.addEventListener('visibilitychange',()=>{if(document.hidden)stop();});window.addEventListener('pagehide',stop);})();
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bin Location Stock Report — Local JSON</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#eef4fa;color:#163b54;font:16px system-ui,Arial,sans-serif}.wrap{max-width:950px;margin:auto;padding:12px}
+header{font-size:clamp(23px,5vw,32px);font-weight:800;color:#075386;margin:10px 0 15px}
+.panel{background:white;border:1px solid #d2e1eb;border-radius:15px;padding:16px;margin-bottom:12px;box-shadow:0 2px 8px #13334d0c}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}input[type=text]{width:100%;font-size:19px;border:1px solid #a9c1d0;border-radius:9px;padding:14px;min-height:50px}
+button,.filelabel{display:inline-flex;justify-content:center;align-items:center;gap:6px;border:0;border-radius:9px;padding:12px 14px;font-weight:700;font-size:15px;cursor:pointer;background:#0876c9;color:white}
+button.alt{background:#59758a}button.green{background:#07966b}button.orange{background:#db8119}.filelabel{background:#075386}#file{display:none}
+.small{font-size:13px;color:#637e91}.status{margin:10px 0;color:#32627e;font-size:14px;overflow-wrap:anywhere}.error{color:#b42318}
+#cameraArea{display:none;margin:12px 0}video{width:100%;max-height:42vh;background:#111;border-radius:10px}
+h2{margin:0 0 8px;font-size:21px}.meta{color:#5a7487;font-size:14px;margin:5px 0 15px}
+.item{border:1px solid #d3e2eb;border-radius:10px;padding:12px;margin:12px 0;break-inside:avoid}.item h3{margin:0 0 10px;font-size:17px;overflow-wrap:anywhere}
+table{border-collapse:collapse;width:100%;font-size:13px}th,td{border:1px solid #d9e5eb;padding:7px 4px;text-align:right}th:first-child,td:first-child{text-align:left}th{background:#eaf3f9}tfoot{font-weight:800;background:#e5f3f8}
+.total{background:#e6f3fb;border-radius:9px;padding:12px;margin:12px 0;font-weight:750}
+#report{min-height:110px}.hidden{display:none!important}
+@media(max-width:550px){.wrap{padding:9px}.panel{padding:12px}.row button{flex:1}th,td{font-size:12px;padding:7px 3px}}
+@media print{body{background:white}.wrap{max-width:none}.panel{box-shadow:none;border:0;padding:0}.controls,.status,#cameraArea{display:none!important}.item{break-inside:avoid}header{font-size:23px}}
+</style></head><body><main class="wrap">
+<header>📍 Bin Location Stock Report</header>
+<section class="panel controls">
+<div class="row">
+<label class="filelabel" for="file">📁 Import Inventory JSON</label><input id="file" type="file" accept=".json,application/json">
+<button class="alt" id="clear">Clear data</button>
+</div>
+<div class="status" id="importStatus">No data imported. Choose your Inventory FULL Backup JSON from this device. The file is read only in this browser session and is not uploaded.</div>
+<div class="small">Your inventory JSON stays on this device; this public GitHub page contains no stock data. Re-import after reloading to see the latest snapshot.</div>
+<hr style="border:0;border-top:1px solid #e1eaf0;margin:15px 0">
+<label for="bin"><strong>Bin location</strong></label>
+<input id="bin" type="text" placeholder="Scan / type bin location, e.g. G-G29-L04" autocomplete="off" autocapitalize="characters" list="bins">
+<datalist id="bins"></datalist>
+<div class="row" style="margin-top:10px">
+<button id="scan">📷 Scan Camera</button>
+<button class="green" id="csv">⬇ Excel CSV</button>
+<button class="orange" id="print">🖨 Print</button>
+</div>
+<div id="cameraArea"><video id="video" autoplay muted playsinline></video><button class="alt" id="stop">Stop camera</button></div>
+<div class="status" id="scanStatus">Select or scan a bin. Report appears automatically after a valid location is selected.</div>
+</section>
+<section class="panel" id="report"><h2>Stock Report</h2><p class="meta">Import your Inventory JSON to view stock balances.</p></section>
+</main>
+<script>
+'use strict';
+const $=id=>document.getElementById(id);
+let snapshot=null, rows=[], validBins=new Set(), detector=null, stream=null, frame=0, scanning=false, busy=false, timer=0;
+const code=x=>String(x??'').trim().toUpperCase();
+const num=x=>Number(x)||0;
+const escapeHTML=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt=x=>Number(x).toLocaleString('en-US',{maximumFractionDigits:3});
+function status(message,error=false){$('scanStatus').textContent=message;$('scanStatus').className='status'+(error?' error':'')}
+function quantity(r){return (r.rows||[]).slice(0,4).reduce((a,z)=>a+num(z.subtotal),0)}
+function locationRows(loc){return (snapshot?.stock||[]).filter(r=>code(r.location)===loc&&quantity(r)>0).sort((a,b)=>String(a.item).localeCompare(String(b.item)))}
+function uom(item){return /(?:^|[-_ ])(?:OIL)(?:[-_ ]|$)/i.test(item)?'KG':'PCS'}
+function render(loc){
+ if(!snapshot){$('report').innerHTML='<h2>Stock Report</h2><p class="meta">Import your Inventory JSON first.</p>';return}
+ if(!validBins.has(loc)){$('report').innerHTML='<h2>Stock Report</h2><p class="meta">Choose or scan a bin location from the imported backup.</p>';return}
+ rows=locationRows(loc);
+ const byUom={};rows.forEach(r=>{const u=uom(r.item);byUom[u]=(byUom[u]||0)+quantity(r)});
+ let out='<h2>Bin Location: '+escapeHTML(loc)+'</h2><div class="meta">Positive Balance SKU: '+rows.length+' · Backup date: '+escapeHTML(snapshot.exportedAt||'Unknown')+'</div>';
+ for(let i=0;i<rows.length;i++){
+  const r=rows[i],size=Array.from({length:4},(_,n)=>r.rows?.[n]||{});
+  out+='<article class="item"><h3>'+(i+1)+'. '+escapeHTML(r.item)+' <span class="small">('+uom(r.item)+')</span></h3><table><thead><tr><th>Size</th><th>CTN</th><th>Qty / CTN</th><th>Subtotal</th></tr></thead><tbody>';
+  for(let j=0;j<4;j++)out+='<tr><td>Size '+(j+1)+'</td><td>'+fmt(size[j].ctn)+'</td><td>'+fmt(size[j].qty)+'</td><td>'+fmt(size[j].subtotal)+'</td></tr>';
+  out+='</tbody><tfoot><tr><th colspan="3">ITEM TOTAL</th><th>'+fmt(quantity(r))+'</th></tr></tfoot></table></article>';
+ }
+ if(!rows.length)out+='<p>No positive stock in this bin in the imported snapshot.</p>';
+ out+='<div class="total">Positive Balance SKU: '+rows.length+' | Totals by UOM: '+(Object.entries(byUom).map(([u,v])=>u+' '+fmt(v)).join(' · ')||'0')+'</div>';
+ $('report').innerHTML=out;
+ status('Showing current balance from imported backup for '+loc);
+}
+function selectBin(value){
+ const loc=code(value);$('bin').value=loc;
+ if(!snapshot){render(loc);status('Import inventory JSON first.',true);return false}
+ if(!validBins.has(loc)){render(loc);status('Unknown bin location in imported backup: '+loc,true);return false}
+ render(loc);return true;
+}
+$('bin').addEventListener('input',()=>{
+ clearTimeout(timer);const loc=code($('bin').value);
+ if(validBins.has(loc))timer=setTimeout(()=>selectBin(loc),90);
+ else{rows=[];render('');if(loc)status('No matching bin yet. Select a known location.',true)}
+});
+$('bin').addEventListener('change',()=>{if(validBins.has(code($('bin').value)))selectBin($('bin').value)});
+$('bin').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();selectBin($('bin').value)}});
+$('file').addEventListener('change',async e=>{
+ const file=e.target.files?.[0];if(!file)return;
+ try{
+  const data=JSON.parse(await file.text());
+  if(data.format!=='inventory-portable-backup'||!data.state||!Array.isArray(data.state.stock))throw Error('This is not a supported Inventory FULL Backup JSON.');
+  snapshot={stock:data.state.stock,exportedAt:data.exportedAt||''};
+  validBins=new Set(snapshot.stock.map(r=>code(r.location)).filter(Boolean));
+  (data.state.extraLocations||[]).forEach(x=>{const k=code(typeof x==='string'?x:(x.code||x.location));if(k)validBins.add(k)});
+  $('bins').innerHTML=Array.from(validBins).sort().map(k=>'<option value="'+escapeHTML(k)+'"></option>').join('');
+  $('importStatus').textContent='Loaded '+file.name+' · '+snapshot.stock.length+' stock records · '+validBins.size+' known bins. Data stays in this tab only.';
+  $('file').value='';
+  const loc=code($('bin').value);if(validBins.has(loc))selectBin(loc);else render('');
+ }catch(err){$('importStatus').textContent='Import failed: '+err.message;$('importStatus').className='status error'}
+});
+function stopCamera(){scanning=false;if(frame)cancelAnimationFrame(frame);frame=0;if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}const v=$('video');v.pause();v.srcObject=null;$('cameraArea').style.display='none'}
+$('stop').onclick=stopCamera;
+$('scan').onclick=async()=>{
+ if(scanning){stopCamera();return}
+ if(!navigator.mediaDevices?.getUserMedia){status('Camera requires HTTPS and a compatible browser.',true);return}
+ if(!('BarcodeDetector' in window)){status('BarcodeDetector unavailable. Use Chrome or a USB/Bluetooth scanner.',true);return}
+ try{
+  detector=new BarcodeDetector({formats:['code_128','code_39','qr_code','ean_13','ean_8','itf','data_matrix']});
+  stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}},audio:false});
+  $('video').srcObject=stream;$('cameraArea').style.display='block';await $('video').play();scanning=true;status('Point camera at the bin barcode.');
+  let last=0;
+  async function tick(t){
+   if(!scanning)return;
+   if(!busy&&t-last>200){last=t;busy=true;try{
+    const found=await detector.detect($('video'));
+    if(found.length){const value=found[0].rawValue;stopCamera();selectBin(value);return}
+   }catch(e){}finally{busy=false}}
+   if(scanning)frame=requestAnimationFrame(tick);
+  }
+  frame=requestAnimationFrame(tick);
+ }catch(e){stopCamera();status('Unable to open camera: '+e.message,true)}
+};
+$('clear').onclick=()=>{stopCamera();snapshot=null;rows=[];validBins.clear();$('bins').innerHTML='';$('bin').value='';$('importStatus').textContent='Data cleared from this tab.';render('');status('Import JSON to begin.')};
+$('print').onclick=()=>{if(snapshot&&validBins.has(code($('bin').value)))window.print();else status('Choose a bin after importing JSON.',true)};
+$('csv').onclick=()=>{
+ const loc=code($('bin').value);if(!snapshot||!validBins.has(loc)){status('Choose a bin after importing JSON.',true);return}
+ const cells=[['Bin Location','Item Code','UOM','Size','CTN','Qty / CTN','Subtotal','Item Total']];
+ locationRows(loc).forEach(r=>{const z=Array.from({length:4},(_,i)=>r.rows?.[i]||{});z.forEach((s,i)=>cells.push([loc,r.item,uom(r.item),'Size '+(i+1),num(s.ctn),num(s.qty),num(s.subtotal),i===3?quantity(r):'']))});
+ const csv='\ufeff'+cells.map(r=>r.map(x=>'"'+String(x).replace(/"/g,'""')+'"').join(',')).join('\r\n');
+ const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download='Bin_Location_'+loc+'.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+};
 </script></body></html>
