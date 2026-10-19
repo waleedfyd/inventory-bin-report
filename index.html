@@ -76,7 +76,7 @@ const code=x=>String(x??'').trim().toUpperCase();
 const num=x=>Number(x)||0;
 const escapeHTML=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt=x=>Number(x).toLocaleString('en-US',{maximumFractionDigits:3});
-const inspectionTimeFormat=d=>new Intl.DateTimeFormat('en-GB',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(d);
+const inspectionTimeFormat=d=>new Intl.DateTimeFormat('en-US',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:true}).format(d);
 let inspectionStamp='',inspectionBin='';
 function status(message,error=false){$('scanStatus').textContent=message;$('scanStatus').className='status'+(error?' error':'')}
 function quantity(r){return (r.rows||[]).slice(0,4).reduce((a,z)=>a+num(z.subtotal),0)}
@@ -88,7 +88,7 @@ function render(loc){
  if(inspectionBin!==loc||!inspectionStamp){inspectionBin=loc;inspectionStamp=inspectionTimeFormat(new Date())}
  rows=locationRows(loc);
  const byUom={};rows.forEach(r=>{const u=uom(r.item);byUom[u]=(byUom[u]||0)+quantity(r)});
- let out='<h2>Bin Location: '+escapeHTML(loc)+'</h2><div class="meta">Positive Balance SKU: '+rows.length+' · Backup date: '+escapeHTML(snapshot.exportedAt||'Unknown')+'</div><div class="meta" style="font-weight:750;color:#174b70">Inspection date &amp; time: '+escapeHTML(inspectionStamp)+'</div>';
+ let out='<h2>Bin Location: '+escapeHTML(loc)+'</h2><div class="meta">Positive Balance SKU: '+rows.length+' · Backup date: '+escapeHTML(snapshot.exportedAt||'Unknown')+'</div><div class="meta" style="font-weight:750;color:#174b70">Inspection date &amp; time (AM/PM): '+escapeHTML(inspectionStamp)+'</div>';
  for(let i=0;i<rows.length;i++){
   const r=rows[i],size=Array.from({length:4},(_,n)=>r.rows?.[n]||{});
   out+='<article class="item"><h3>'+(i+1)+'. '+escapeHTML(r.item)+' <span class="small">('+uom(r.item)+')</span></h3><table><thead><tr><th>Size</th><th>CTN</th><th>Qty / CTN</th><th>Subtotal</th></tr></thead><tbody>';
