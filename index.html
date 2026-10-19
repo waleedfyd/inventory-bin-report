@@ -52,6 +52,7 @@ header{margin:3px 0 8px;font-size:24px}.panel{padding:12px}.wrap{padding:8px}.st
 <button id="scan">📷 Camera</button>
 <button class="green" id="csv">⬇ Excel CSV</button>
 <button class="orange" id="print">🖨 Print</button>
+<button id="saveImage" type="button" style="background:#6547a7">📸 Save Full Report</button>
 </div>
 <div id="cameraArea" role="dialog" aria-modal="true" aria-label="Scan location"><div class="cameraTop"><strong>Scan location text</strong><button class="alt" id="stop" type="button">✕ Close</button></div><div class="cameraBox"><video id="video" autoplay muted playsinline></video><div class="aim"></div></div><div class="status" id="ocrDebug">Point at printed code</div><div class="choicesHead">Tap the correct location:</div><div id="suggestions" class="suggestions" aria-live="polite"></div></div>
 <div class="status" id="scanStatus"></div>
@@ -274,6 +275,41 @@ $('scan').onclick=async()=>{
  }catch(e){stopCamera();status('Unable to start OCR camera: '+e.message,true)}
 };
 $('clear').onclick=async()=>{if(!confirm('Delete saved inventory backup from this device?'))return;try{await backupAction('delete');stopCamera();$('suggestions').replaceChildren();suggestionSignature='';snapshot=null;rows=[];validBins.clear();$('bins').innerHTML='';$('bin').value='';$('importStatus').textContent='Saved backup deleted.';render('');status('Import JSON to begin.')}catch(e){status('Could not delete saved backup: '+e.message,true)}};
+// Save only the full report panel as a single long WebP image (not the visible viewport).
+// html2canvas renders locally: no report data is uploaded.
+let imageSaving=false;
+function loadScreenshotLibrary(){
+ if(window.html2canvas)return Promise.resolve();
+ return new Promise((resolve,reject)=>{
+  const s=document.createElement('script');
+  s.src='https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
+  s.onload=resolve;s.onerror=()=>reject(Error('Image library could not load. Check internet connection.'));
+  document.head.appendChild(s);
+ });
+}
+$('saveImage').onclick=async()=>{
+ if(imageSaving)return;
+ const loc=code($('bin').value);
+ if(!snapshot||!validBins.has(loc)){status('Select a bin location first.',true);return}
+ imageSaving=true;const button=$('saveImage');button.disabled=true;button.textContent='⏳ Saving...';
+ try{
+  await loadScreenshotLibrary();
+  const target=$('report');
+  const width=Math.ceil(target.scrollWidth),height=Math.ceil(target.scrollHeight);
+  const maxPixels=12000000,maxSide=15000;
+  const scale=Math.min(1.6,Math.sqrt(maxPixels/(width*height)),maxSide/height,maxSide/width);
+  if(scale<0.25)throw Error('Report is too long for one image on this phone. Use Print → Save as PDF.');
+  const canvas=await html2canvas(target,{backgroundColor:'#ffffff',scale:Math.max(0.25,scale),useCORS:false,logging:false,scrollX:0,scrollY:-window.scrollY,windowWidth:document.documentElement.clientWidth});
+  const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/webp',0.78));
+  if(!blob)throw Error('Image creation failed on this device.');
+  const isWebP=blob.type==='image/webp';
+  const now=new Date();const stamp=[now.getFullYear(),String(now.getMonth()+1).padStart(2,'0'),String(now.getDate()).padStart(2,'0')].join('-')+'_'+String(now.getHours()).padStart(2,'0')+String(now.getMinutes()).padStart(2,'0');
+  const filename=loc+'_'+stamp+'.'+(isWebP?'webp':'png');
+  const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);
+  status('Image saved to browser downloads: '+filename+'. Move it to your Review Results folder in My Files if needed.');
+ }catch(e){status('Image save failed: '+e.message,true)}
+ finally{imageSaving=false;button.disabled=false;button.textContent='📸 Save Full Report'}
+};
 $('print').onclick=()=>{if(snapshot&&validBins.has(code($('bin').value)))window.print();else status('Choose a bin after importing JSON.',true)};
 $('csv').onclick=()=>{
  const loc=code($('bin').value);if(!snapshot||!validBins.has(loc)){status('Choose a bin after importing JSON.',true);return}
