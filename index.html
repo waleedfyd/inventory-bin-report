@@ -35,6 +35,14 @@ table{border-collapse:collapse;width:100%;font-size:13px}th,td{border:1px solid 
 header{margin:3px 0 8px;font-size:24px}.panel{padding:12px}.wrap{padding:8px}.status{margin:6px 0}
 @media(min-width:750px){#cameraArea{left:50%;right:auto;transform:translateX(-50%);width:min(540px,100%);box-shadow:0 0 0 100vw #0009}}
 @media(max-height:680px){.cameraBox{height:34dvh}#suggestions button{min-height:44px;padding:6px}}
+
+/* Native datalist replaced with a visible, scrollable, touch-friendly search list. */
+.bin-matches{margin:5px 0 0;border:1px solid #a8c6d9;border-radius:10px;background:#fff;max-height:min(42dvh,310px);overflow-y:auto;overscroll-behavior:contain;box-shadow:0 7px 18px #123c5620;position:relative;z-index:8}
+.bin-matches[hidden]{display:none!important}
+.bin-match{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;padding:12px 14px;border:0;border-bottom:1px solid #e5eef3;border-radius:0;background:#fff;color:#0a4f78;font-size:18px;font-weight:750;text-align:left;min-height:48px}
+.bin-match:last-child{border-bottom:0}.bin-match:active,.bin-match.selected{background:#d9f0ff;color:#063e61}
+.bin-match small{color:#648094;font-size:11px;font-weight:500}.bin-match mark{background:#fff0aa;color:inherit;border-radius:2px}
+.bin-count{padding:8px 12px;background:#eef6fb;color:#55738a;font-size:12px;position:sticky;top:0;z-index:1}
 </style></head><body><main class="wrap">
 <header>📍 Bin Stock</header>
 <section class="panel controls">
@@ -46,8 +54,8 @@ header{margin:3px 0 8px;font-size:24px}.panel{padding:12px}.wrap{padding:8px}.st
 
 <hr style="border:0;border-top:1px solid #e1eaf0;margin:15px 0">
 <label for="bin"><strong>Bin location</strong></label>
-<input id="bin" type="text" placeholder="Scan / type bin location, e.g. G-G29-L04" autocomplete="off" autocapitalize="characters" list="bins">
-<datalist id="bins"></datalist>
+<input id="bin" type="text" placeholder="Scan / type bin location, e.g. G-G29-L04" autocomplete="off" autocapitalize="characters" aria-controls="binMatches" aria-expanded="false" role="combobox">
+<div id="binMatches" class="bin-matches" role="listbox" aria-label="Matching bin locations" hidden></div>
 <div class="row" style="margin-top:10px">
 <button id="scan">📷 Camera</button>
 <button class="green" id="csv">⬇ Excel CSV</button>
@@ -90,18 +98,62 @@ function render(loc){
  status('Showing current balance from imported backup for '+loc);
 }
 function selectBin(value){
- const loc=code(value);$('bin').value=loc;
+ const loc=code(value);$('bin').value=loc;closeBinMatches();
  if(!snapshot){render(loc);status('Import inventory JSON first.',true);return false}
  if(!validBins.has(loc)){render(loc);status('Unknown bin location in imported backup: '+loc,true);return false}
  render(loc);return true;
 }
+// Search is not restricted to a prefix: every imported matching location is offered.
+let binMatches=[],binHighlight=-1;
+const binList=$('binMatches');
+function closeBinMatches(){binList.hidden=true;$('bin').setAttribute('aria-expanded','false');binHighlight=-1}
+function paintBinMatches(){
+ binList.replaceChildren();
+ if(!snapshot||!validBins.size){closeBinMatches();return}
+ const term=code($('bin').value);
+ if(!term){closeBinMatches();return}
+ binMatches=Array.from(validBins).filter(loc=>loc.includes(term)).sort();
+ if(!binMatches.length){closeBinMatches();return}
+ const label=document.createElement('div');label.className='bin-count';label.textContent=binMatches.length+' matching locations';binList.append(label);
+ binMatches.forEach((loc,i)=>{
+  const b=document.createElement('button');b.type='button';b.className='bin-match';b.setAttribute('role','option');
+  if(i===binHighlight)b.classList.add('selected');
+  const name=document.createElement('span');const idx=loc.indexOf(term);
+  name.append(document.createTextNode(loc.slice(0,idx)));
+  const mark=document.createElement('mark');mark.textContent=loc.slice(idx,idx+term.length);name.append(mark,document.createTextNode(loc.slice(idx+term.length)));
+  const hint=document.createElement('small');hint.textContent='Select';b.append(name,hint);
+  b.addEventListener('pointerdown',e=>e.preventDefault());
+  b.addEventListener('click',()=>chooseBinMatch(loc));binList.append(b);
+ });
+ binList.hidden=false;$('bin').setAttribute('aria-expanded','true');
+}
+function chooseBinMatch(loc){
+ closeBinMatches();$('bin').value=loc;
+ $('bin').blur(); // dismiss mobile keyboard
+ selectBin(loc);
+ $('report').scrollIntoView({behavior:'smooth',block:'start'});
+}
+$('bin').addEventListener('focus',paintBinMatches);
 $('bin').addEventListener('input',()=>{
- clearTimeout(timer);const loc=code($('bin').value);
- if(validBins.has(loc))timer=setTimeout(()=>selectBin(loc),90);
- else{rows=[];render('');if(loc)status('No matching bin yet. Select a known location.',true)}
+ clearTimeout(timer);const term=code($('bin').value);
+ paintBinMatches();
+ if(validBins.has(term))timer=setTimeout(()=>{if(code($('bin').value)===term)selectBin(term)},120);
+ else{rows=[];render('');if(term&&!binMatches.length)status('No matching locations.',true);else status('Select a location from the list.');}
 });
-$('bin').addEventListener('change',()=>{if(validBins.has(code($('bin').value)))selectBin($('bin').value)});
-$('bin').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();selectBin($('bin').value)}});
+$('bin').addEventListener('change',()=>{const loc=code($('bin').value);if(validBins.has(loc))selectBin(loc)});
+$('bin').addEventListener('keydown',e=>{
+ if(e.key==='Escape'){closeBinMatches();return}
+ if(e.key==='ArrowDown'||e.key==='ArrowUp'){
+  if(!binMatches.length)return;e.preventDefault();
+  binHighlight=(binHighlight+(e.key==='ArrowDown'?1:-1)+binMatches.length)%binMatches.length;
+  paintBinMatches();binList.querySelectorAll('.bin-match')[binHighlight]?.scrollIntoView({block:'nearest'});return;
+ }
+ if(e.key==='Enter'){
+  e.preventDefault();const loc=binHighlight>=0?binMatches[binHighlight]:code($('bin').value);
+  if(validBins.has(loc))chooseBinMatch(loc);
+ }
+});
+document.addEventListener('pointerdown',e=>{if(e.target!==$('bin')&&!binList.contains(e.target))closeBinMatches()});
 // Keep the last successful inventory snapshot on this device across browser restarts.
 const DB_NAME='bin-stock-local-v1', STORE='backups', RECORD='active';
 function openBackupDB(){return new Promise((resolve,reject)=>{
@@ -127,7 +179,7 @@ function installBackup(data){
  const bins=new Set(next.stock.map(r=>code(r.location)).filter(Boolean));
  (data.state.extraLocations||[]).forEach(x=>{const k=code(typeof x==='string'?x:(x.code||x.location));if(k)bins.add(k)});
  snapshot=next;validBins=bins;rows=[];
- $('bins').innerHTML=Array.from(validBins).sort().map(k=>'<option value="'+escapeHTML(k)+'"></option>').join('');
+ paintBinMatches();
  $('importStatus').className='status';
  const loc=code($('bin').value);if(validBins.has(loc))selectBin(loc);else render('');
  return bins.size;
@@ -276,7 +328,7 @@ $('scan').onclick=async()=>{
   readFrame();
  }catch(e){stopCamera();status('Unable to start OCR camera: '+e.message,true)}
 };
-$('clear').onclick=async()=>{if(!confirm('Delete saved inventory backup from this device?'))return;try{await backupAction('delete');stopCamera();$('suggestions').replaceChildren();suggestionSignature='';snapshot=null;rows=[];validBins.clear();$('bins').innerHTML='';$('bin').value='';$('importStatus').textContent='Saved backup deleted.';render('');status('Import JSON to begin.')}catch(e){status('Could not delete saved backup: '+e.message,true)}};
+$('clear').onclick=async()=>{if(!confirm('Delete saved inventory backup from this device?'))return;try{await backupAction('delete');stopCamera();$('suggestions').replaceChildren();suggestionSignature='';snapshot=null;rows=[];validBins.clear();closeBinMatches();binList.replaceChildren();$('bin').value='';$('importStatus').textContent='Saved backup deleted.';render('');status('Import JSON to begin.')}catch(e){status('Could not delete saved backup: '+e.message,true)}};
 // Save only the full report panel as a single long WebP image (not the visible viewport).
 // html2canvas renders locally: no report data is uploaded.
 let imageSaving=false;
