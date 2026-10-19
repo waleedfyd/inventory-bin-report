@@ -30,6 +30,8 @@ table{border-collapse:collapse;width:100%;font-size:13px}th,td{border:1px solid 
 #suggestions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;align-content:start;overflow-y:auto;min-height:0;flex:1;margin:0;padding-bottom:4px}
 #suggestions button{font-size:16px;padding:11px 7px;min-height:55px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px}
 #suggestions .hint{font-size:10px}
+#suggestions button.top-choice{background:#087f5b;color:#fff;border:2px solid #045c42;box-shadow:0 0 0 2px #b5ead4 inset}
+#suggestions button.top-choice .hint{color:#e5fff4;font-weight:800}
 header{margin:3px 0 8px;font-size:24px}.panel{padding:12px}.wrap{padding:8px}.status{margin:6px 0}
 @media(min-width:750px){#cameraArea{left:50%;right:auto;transform:translateX(-50%);width:min(540px,100%);box-shadow:0 0 0 100vw #0009}}
 @media(max-height:680px){.cameraBox{height:34dvh}#suggestions button{min-height:44px;padding:6px}}
@@ -37,7 +39,7 @@ header{margin:3px 0 8px;font-size:24px}.panel{padding:12px}.wrap{padding:8px}.st
 <header>📍 Bin Stock</header>
 <section class="panel controls">
 <div class="row">
-<label class="filelabel" for="file">📁 Import Inventory JSON</label><input id="file" type="file" accept=".json,application/json">
+<label class="filelabel" for="file">📁 Import Inventory JSON</label><input id="file" type="file" accept=".json,application/json"> <button id="clear" class="alt" type="button" style="background:#e8eef2;color:#375469;font-size:12px;padding:9px">Delete saved backup</button>
 
 </div>
 <div class="status" id="importStatus">Import backup to start.</div>
@@ -99,20 +101,60 @@ $('bin').addEventListener('input',()=>{
 });
 $('bin').addEventListener('change',()=>{if(validBins.has(code($('bin').value)))selectBin($('bin').value)});
 $('bin').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();selectBin($('bin').value)}});
+// Keep the last successful inventory snapshot on this device across browser restarts.
+const DB_NAME='bin-stock-local-v1', STORE='backups', RECORD='active';
+function openBackupDB(){return new Promise((resolve,reject)=>{
+ if(!window.indexedDB){reject(Error('Local storage is unavailable in this browser.'));return}
+ const req=indexedDB.open(DB_NAME,1);
+ req.onupgradeneeded=()=>{if(!req.result.objectStoreNames.contains(STORE))req.result.createObjectStore(STORE)};
+ req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error||Error('Database open failed'));
+})}
+async function backupAction(mode,value){
+ const db=await openBackupDB();
+ try{return await new Promise((resolve,reject)=>{
+  const tx=db.transaction(STORE,mode==='get'?'readonly':'readwrite');
+  const store=tx.objectStore(STORE);
+  const req=mode==='get'?store.get(RECORD):mode==='put'?store.put(value,RECORD):store.delete(RECORD);
+  let result;
+  req.onsuccess=()=>{result=req.result};req.onerror=()=>reject(req.error||Error('Storage operation failed'));
+  tx.oncomplete=()=>resolve(result);tx.onerror=()=>reject(tx.error||Error('Storage transaction failed'));
+ })}finally{db.close()}
+}
+function installBackup(data){
+ if(data.format!=='inventory-portable-backup'||!data.state||!Array.isArray(data.state.stock))throw Error('Unsupported Inventory FULL Backup JSON.');
+ const next={stock:data.state.stock,exportedAt:data.exportedAt||''};
+ const bins=new Set(next.stock.map(r=>code(r.location)).filter(Boolean));
+ (data.state.extraLocations||[]).forEach(x=>{const k=code(typeof x==='string'?x:(x.code||x.location));if(k)bins.add(k)});
+ snapshot=next;validBins=bins;rows=[];
+ $('bins').innerHTML=Array.from(validBins).sort().map(k=>'<option value="'+escapeHTML(k)+'"></option>').join('');
+ $('importStatus').className='status';
+ const loc=code($('bin').value);if(validBins.has(loc))selectBin(loc);else render('');
+ return bins.size;
+}
 $('file').addEventListener('change',async e=>{
  const file=e.target.files?.[0];if(!file)return;
+ $('importStatus').textContent='Loading backup…';$('importStatus').className='status';
  try{
-  const data=JSON.parse(await file.text());
-  if(data.format!=='inventory-portable-backup'||!data.state||!Array.isArray(data.state.stock))throw Error('This is not a supported Inventory FULL Backup JSON.');
-  snapshot={stock:data.state.stock,exportedAt:data.exportedAt||''};
-  validBins=new Set(snapshot.stock.map(r=>code(r.location)).filter(Boolean));
-  (data.state.extraLocations||[]).forEach(x=>{const k=code(typeof x==='string'?x:(x.code||x.location));if(k)validBins.add(k)});
-  $('bins').innerHTML=Array.from(validBins).sort().map(k=>'<option value="'+escapeHTML(k)+'"></option>').join('');
-  $('importStatus').textContent='✓ '+validBins.size+' locations loaded';$('importStatus').className='status';
-  $('file').value='';
-  const loc=code($('bin').value);if(validBins.has(loc))selectBin(loc);else render('');
- }catch(err){$('importStatus').textContent='Import failed: '+err.message;$('importStatus').className='status error'}
+  const raw=await file.text();const data=JSON.parse(raw);
+  if(data.format!=='inventory-portable-backup'||!data.state||!Array.isArray(data.state.stock))throw Error('Unsupported Inventory FULL Backup JSON.');
+  // Persist first: a failed save must not replace the previous working backup.
+  await backupAction('put',raw);
+  const count=installBackup(data);
+  $('importStatus').textContent='✓ Saved on this device · '+count+' locations · '+(data.exportedAt||'');
+ }catch(err){$('importStatus').textContent='Import/save failed: '+err.message+'. Previous backup remains available if already loaded.';$('importStatus').className='status error'}
+ finally{$('file').value=''}
 });
+async function restoreSavedBackup(){
+ $('importStatus').textContent='Checking saved inventory…';
+ try{
+  const raw=await backupAction('get');
+  if(!raw){$('importStatus').textContent='Import backup once to save it on this device.';return}
+  const data=JSON.parse(raw);const count=installBackup(data);
+  $('importStatus').textContent='✓ Saved backup ready · '+count+' locations · '+(data.exportedAt||'');
+ }catch(err){$('importStatus').textContent='Could not restore saved backup: '+err.message;$('importStatus').className='status error'}
+}
+restoreSavedBackup();
+
 function stopCamera(){
  scanSession++;scanCandidate='';scanCount=0;scanning=false;
  if(frame)clearTimeout(frame);frame=0;
@@ -166,17 +208,18 @@ function ocrCandidates(raw){
 function showChoices(matches){
  for(const [loc,score] of matches){const old=candidateHistory.get(loc);candidateHistory.set(loc,{score:Math.min(score,old?.score??999),seen:(old?.seen||0)+1});}
  if(candidateHistory.size>30){const sorted=[...candidateHistory].sort((a,b)=>a[1].score-b[1].score||b[1].seen-a[1].seen).slice(0,20);candidateHistory=new Map(sorted)}
- matches=[...candidateHistory].sort((a,b)=>a[1].score-b[1].score||b[1].seen-a[1].seen).slice(0,8).map(([loc,x])=>[loc,x.score]);
+ matches=[...candidateHistory].sort((a,b)=>a[1].score-b[1].score||b[1].seen-a[1].seen).slice(0,6).map(([loc,x])=>[loc,x.score]);
  const signature=matches.map(([loc,score])=>loc+':'+score.toFixed(2)).join('|');
  if(signature===suggestionSignature)return;
  suggestionSignature=signature;
  const el=$('suggestions');el.replaceChildren();
  if(!matches.length){el.textContent='Waiting for location text…';return}
  
- for(const [loc,score] of matches){
+ for(const [index,[loc,score]] of matches.entries()){
   const btn=document.createElement('button');btn.type='button';
+  if(index===0)btn.classList.add('top-choice');
   const name=document.createElement('strong');name.textContent=loc;
-  const hint=document.createElement('span');hint.className='hint';hint.textContent=score<0.1?'Exact OCR match':'Possible match';
+  const hint=document.createElement('span');hint.className='hint';hint.textContent=index===0?(score<0.1?'★ Best · Exact match':'★ Best match'):(score<0.1?'Exact OCR match':'Possible match');
   btn.append(name,hint);
   btn.addEventListener('click',()=>{stopCamera();selectBin(loc);$('suggestions').replaceChildren();suggestionSignature='';$('report').scrollIntoView({behavior:'smooth',block:'start'});});
   el.append(btn);
@@ -230,7 +273,7 @@ $('scan').onclick=async()=>{
   readFrame();
  }catch(e){stopCamera();status('Unable to start OCR camera: '+e.message,true)}
 };
-$('clear').onclick=()=>{stopCamera();$('suggestions').replaceChildren();suggestionSignature='';snapshot=null;rows=[];validBins.clear();$('bins').innerHTML='';$('bin').value='';$('importStatus').textContent='Data cleared from this tab.';render('');status('Import JSON to begin.')};
+$('clear').onclick=async()=>{if(!confirm('Delete saved inventory backup from this device?'))return;try{await backupAction('delete');stopCamera();$('suggestions').replaceChildren();suggestionSignature='';snapshot=null;rows=[];validBins.clear();$('bins').innerHTML='';$('bin').value='';$('importStatus').textContent='Saved backup deleted.';render('');status('Import JSON to begin.')}catch(e){status('Could not delete saved backup: '+e.message,true)}};
 $('print').onclick=()=>{if(snapshot&&validBins.has(code($('bin').value)))window.print();else status('Choose a bin after importing JSON.',true)};
 $('csv').onclick=()=>{
  const loc=code($('bin').value);if(!snapshot||!validBins.has(loc)){status('Choose a bin after importing JSON.',true);return}
