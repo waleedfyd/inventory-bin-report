@@ -47,7 +47,7 @@ header{margin:3px 0 8px;font-size:24px}.panel{padding:12px}.wrap{padding:8px}.st
 <header>📍 Bin Stock</header>
 <section class="panel controls">
 <div class="row">
-<label class="filelabel" for="file">📁 Import Inventory JSON</label><input id="file" type="file" accept=".json,application/json"> <button id="clear" class="alt" type="button" style="background:#e8eef2;color:#375469;font-size:12px;padding:9px">Delete saved backup</button>
+<label class="filelabel" for="file">📁 Import Inventory JSON</label> <label class="filelabel" for="catalogFile" style="background:#0a806c">📋 Import Item Descriptions (once)</label><input id="catalogFile" type="file" accept=".json,application/json"><input id="file" type="file" accept=".json,application/json"> <button id="clear" class="alt" type="button" style="background:#e8eef2;color:#375469;font-size:12px;padding:9px">Delete saved backup</button>
 
 </div>
 <div class="status" id="importStatus">Import backup to start.</div>
@@ -71,6 +71,8 @@ header{margin:3px 0 8px;font-size:24px}.panel{padding:12px}.wrap{padding:8px}.st
 'use strict';
 const $=id=>document.getElementById(id);
 let candidateHistory=new Map();
+let itemDescriptions=new Map();
+function itemDescription(key){return itemDescriptions.get(code(key))||String(key||'')}
 let snapshot=null, rows=[], validBins=new Set(), stream=null, frame=0, scanning=false, busy=false, timer=0, scanCandidate='', scanCount=0, ocrWorker=null, scanSession=0, suggestionSignature='';
 const code=x=>String(x??'').trim().toUpperCase();
 const num=x=>Number(x)||0;
@@ -91,7 +93,7 @@ function render(loc){
  let out='<h2>Bin Location: '+escapeHTML(loc)+'</h2><div class="meta">Positive Balance SKU: '+rows.length+' · Backup date: '+escapeHTML(snapshot.exportedAt||'Unknown')+'</div><div class="meta" style="font-weight:750;color:#174b70">Inspection date &amp; time (AM/PM): '+escapeHTML(inspectionStamp)+'</div>';
  for(let i=0;i<rows.length;i++){
   const r=rows[i],size=Array.from({length:4},(_,n)=>r.rows?.[n]||{});
-  out+='<article class="item"><h3>'+(i+1)+'. '+escapeHTML(r.item)+' <span class="small">('+uom(r.item)+')</span></h3><table><thead><tr><th>Size</th><th>CTN</th><th>Qty / CTN</th><th>Subtotal</th></tr></thead><tbody>';
+  out+='<article class="item"><h3>'+(i+1)+'. '+escapeHTML(r.item)+' <span class="small">('+uom(r.item)+')</span></h3><div style="font-size:15px;font-weight:650;margin:-3px 0 10px;overflow-wrap:anywhere">'+escapeHTML(itemDescription(r.item))+'</div><table><thead><tr><th>Size</th><th>CTN</th><th>Qty / CTN</th><th>Subtotal</th></tr></thead><tbody>';
   for(let j=0;j<4;j++)out+='<tr><td>Size '+(j+1)+'</td><td>'+fmt(size[j].ctn)+'</td><td>'+fmt(size[j].qty)+'</td><td>'+fmt(size[j].subtotal)+'</td></tr>';
   out+='</tbody><tfoot><tr><th colspan="3">ITEM TOTAL</th><th>'+fmt(quantity(r))+'</th></tr></tfoot></table></article>';
  }
@@ -159,6 +161,11 @@ $('bin').addEventListener('keydown',e=>{
 document.addEventListener('pointerdown',e=>{if(e.target!==$('bin')&&!binList.contains(e.target))closeBinMatches()});
 // Keep the last successful inventory snapshot on this device across browser restarts.
 const DB_NAME='bin-stock-local-v1', STORE='backups', RECORD='active';
+const CATALOG_RECORD='item-descriptions';
+async function catalogStore(mode,value){const db=await openBackupDB();try{return await new Promise((resolve,reject)=>{const tx=db.transaction(STORE,mode==='get'?'readonly':'readwrite');const req=mode==='get'?tx.objectStore(STORE).get(CATALOG_RECORD):tx.objectStore(STORE).put(value,CATALOG_RECORD);let result;req.onsuccess=()=>result=req.result;req.onerror=()=>reject(req.error);tx.oncomplete=()=>resolve(result);tx.onerror=()=>reject(tx.error)})}finally{db.close()}}
+function applyCatalog(data){if(!Array.isArray(data.items))throw Error('Invalid item descriptions file');let count=0;for(const x of data.items){if(!x||!x.desc)continue;for(const k of [x.barcode,x.ref])if(k){itemDescriptions.set(code(k),String(x.desc));count++}}return count}
+$('catalogFile').addEventListener('change',async e=>{const file=e.target.files?.[0];if(!file)return;try{const raw=await file.text();const data=JSON.parse(raw);if(data.format!=='inventory-item-descriptions')throw Error('Choose Inventory_Item_Descriptions_Import_Once.json');await catalogStore('put',raw);const n=applyCatalog(data);$('importStatus').textContent='✓ Item descriptions saved locally ('+n+' mappings)';const loc=code($('bin').value);if(validBins.has(loc))render(loc)}catch(err){$('importStatus').textContent='Descriptions import failed: '+err.message}finally{$('catalogFile').value=''}});
+(async()=>{try{const raw=await catalogStore('get');if(raw){applyCatalog(JSON.parse(raw));const loc=code($('bin').value);if(validBins.has(loc))render(loc)}}catch(e){}})();
 function openBackupDB(){return new Promise((resolve,reject)=>{
  if(!window.indexedDB){reject(Error('Local storage is unavailable in this browser.'));return}
  const req=indexedDB.open(DB_NAME,1);
@@ -181,7 +188,8 @@ function installBackup(data){
  const next={stock:data.state.stock,exportedAt:data.exportedAt||''};
  const bins=new Set(next.stock.map(r=>code(r.location)).filter(Boolean));
  (data.state.extraLocations||[]).forEach(x=>{const k=code(typeof x==='string'?x:(x.code||x.location));if(k)bins.add(k)});
- snapshot=next;validBins=bins;rows=[];
+ for(const x of (data.state.extraItems||[])){if(x&&x.desc)for(const k of [x.barcode,x.ref])if(k)itemDescriptions.set(code(k),String(x.desc))}
+  snapshot=next;validBins=bins;rows=[];
  paintBinMatches();
  $('importStatus').className='status';
  const loc=code($('bin').value);if(validBins.has(loc))selectBin(loc);else render('');
@@ -379,8 +387,8 @@ $('saveImage').onclick=async()=>{
 $('print').onclick=()=>{if(snapshot&&validBins.has(code($('bin').value)))window.print();else status('Choose a bin after importing JSON.',true)};
 $('csv').onclick=()=>{
  const loc=code($('bin').value);if(!snapshot||!validBins.has(loc)){status('Choose a bin after importing JSON.',true);return}
- const cells=[['Bin Location','Item Code','UOM','Size','CTN','Qty / CTN','Subtotal','Item Total']];
- locationRows(loc).forEach(r=>{const z=Array.from({length:4},(_,i)=>r.rows?.[i]||{});z.forEach((s,i)=>cells.push([loc,r.item,uom(r.item),'Size '+(i+1),num(s.ctn),num(s.qty),num(s.subtotal),i===3?quantity(r):'']))});
+ const cells=[['Bin Location','Item Code','Description','UOM','Size','CTN','Qty / CTN','Subtotal','Item Total']];
+ locationRows(loc).forEach(r=>{const z=Array.from({length:4},(_,i)=>r.rows?.[i]||{});z.forEach((s,i)=>cells.push([loc,r.item,itemDescription(r.item),uom(r.item),'Size '+(i+1),num(s.ctn),num(s.qty),num(s.subtotal),i===3?quantity(r):'']))});
  const csv='\ufeff'+cells.map(r=>r.map(x=>'"'+String(x).replace(/"/g,'""')+'"').join(',')).join('\r\n');
  const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));const a=document.createElement('a');a.href=url;a.download='Bin_Location_'+loc+'.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
 };
