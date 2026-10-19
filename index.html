@@ -60,7 +60,7 @@ header{margin:3px 0 8px;font-size:24px}.panel{padding:12px}.wrap{padding:8px}.st
 <button id="scan">📷 Camera</button>
 <button class="green" id="csv">⬇ Excel CSV</button>
 <button class="orange" id="print">🖨 Print</button>
-<button id="saveImage" type="button" style="background:#6547a7">📸 Save Full Report</button>
+<button id="saveImage" type="button" style="background:#6547a7">📸 Save JPG Report</button>
 </div>
 <div id="cameraArea" role="dialog" aria-modal="true" aria-label="Scan location"><div class="cameraTop"><strong>Scan location text</strong><button class="alt" id="stop" type="button">✕ Close</button></div><div class="cameraBox"><video id="video" autoplay muted playsinline></video><div class="aim"></div></div><div class="status" id="ocrDebug">Point at printed code</div><div class="choicesHead">Tap the correct location:</div><div id="suggestions" class="suggestions" aria-live="polite"></div></div>
 <div class="status" id="scanStatus"></div>
@@ -76,16 +76,19 @@ const code=x=>String(x??'').trim().toUpperCase();
 const num=x=>Number(x)||0;
 const escapeHTML=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt=x=>Number(x).toLocaleString('en-US',{maximumFractionDigits:3});
+const inspectionTimeFormat=d=>new Intl.DateTimeFormat('en-GB',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(d);
+let inspectionStamp='',inspectionBin='';
 function status(message,error=false){$('scanStatus').textContent=message;$('scanStatus').className='status'+(error?' error':'')}
 function quantity(r){return (r.rows||[]).slice(0,4).reduce((a,z)=>a+num(z.subtotal),0)}
 function locationRows(loc){return (snapshot?.stock||[]).filter(r=>code(r.location)===loc&&quantity(r)>0).sort((a,b)=>String(a.item).localeCompare(String(b.item)))}
 function uom(item){return /(?:^|[-_ ])(?:OIL)(?:[-_ ]|$)/i.test(item)?'KG':'PCS'}
 function render(loc){
  if(!snapshot){$('report').innerHTML='<h2>Stock Report</h2><p class="meta">Import your Inventory JSON first.</p>';return}
- if(!validBins.has(loc)){$('report').innerHTML='<h2>Stock Report</h2><p class="meta">Choose or scan a bin location from the imported backup.</p>';return}
+ if(!validBins.has(loc)){inspectionBin='';inspectionStamp='';$('report').innerHTML='<h2>Stock Report</h2><p class="meta">Choose or scan a bin location from the imported backup.</p>';return}
+ if(inspectionBin!==loc||!inspectionStamp){inspectionBin=loc;inspectionStamp=inspectionTimeFormat(new Date())}
  rows=locationRows(loc);
  const byUom={};rows.forEach(r=>{const u=uom(r.item);byUom[u]=(byUom[u]||0)+quantity(r)});
- let out='<h2>Bin Location: '+escapeHTML(loc)+'</h2><div class="meta">Positive Balance SKU: '+rows.length+' · Backup date: '+escapeHTML(snapshot.exportedAt||'Unknown')+'</div>';
+ let out='<h2>Bin Location: '+escapeHTML(loc)+'</h2><div class="meta">Positive Balance SKU: '+rows.length+' · Backup date: '+escapeHTML(snapshot.exportedAt||'Unknown')+'</div><div class="meta" style="font-weight:750;color:#174b70">Inspection date &amp; time: '+escapeHTML(inspectionStamp)+'</div>';
  for(let i=0;i<rows.length;i++){
   const r=rows[i],size=Array.from({length:4},(_,n)=>r.rows?.[n]||{});
   out+='<article class="item"><h3>'+(i+1)+'. '+escapeHTML(r.item)+' <span class="small">('+uom(r.item)+')</span></h3><table><thead><tr><th>Size</th><th>CTN</th><th>Qty / CTN</th><th>Subtotal</th></tr></thead><tbody>';
@@ -329,7 +332,7 @@ $('scan').onclick=async()=>{
  }catch(e){stopCamera();status('Unable to start OCR camera: '+e.message,true)}
 };
 $('clear').onclick=async()=>{if(!confirm('Delete saved inventory backup from this device?'))return;try{await backupAction('delete');stopCamera();$('suggestions').replaceChildren();suggestionSignature='';snapshot=null;rows=[];validBins.clear();closeBinMatches();binList.replaceChildren();$('bin').value='';$('importStatus').textContent='Saved backup deleted.';render('');status('Import JSON to begin.')}catch(e){status('Could not delete saved backup: '+e.message,true)}};
-// Save only the full report panel as a single long WebP image (not the visible viewport).
+// Save the entire report as one JPEG image, with a persistent local serial number.
 // html2canvas renders locally: no report data is uploaded.
 let imageSaving=false;
 function loadScreenshotLibrary(){
@@ -354,15 +357,24 @@ $('saveImage').onclick=async()=>{
   const scale=Math.min(1.6,Math.sqrt(maxPixels/(width*height)),maxSide/height,maxSide/width);
   if(scale<0.25)throw Error('Report is too long for one image on this phone. Use Print → Save as PDF.');
   const canvas=await html2canvas(target,{backgroundColor:'#ffffff',scale:Math.max(0.25,scale),useCORS:false,logging:false,scrollX:0,scrollY:-window.scrollY,windowWidth:document.documentElement.clientWidth});
-  const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/webp',0.78));
-  if(!blob)throw Error('Image creation failed on this device.');
-  const isWebP=blob.type==='image/webp';
-  const now=new Date();const stamp=[now.getFullYear(),String(now.getMonth()+1).padStart(2,'0'),String(now.getDate()).padStart(2,'0')].join('-')+'_'+String(now.getHours()).padStart(2,'0')+String(now.getMinutes()).padStart(2,'0');
-  const filename=loc+'_'+stamp+'.'+(isWebP?'webp':'png');
-  const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);
-  status('Image saved to browser downloads: '+filename+'. Move it to your Review Results folder in My Files if needed.');
+  // JPEG does not support transparency; html2canvas uses an opaque white background.
+  const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',0.82));
+  if(!blob||blob.type!=='image/jpeg')throw Error('JPG creation failed on this device.');
+  const key='bin-stock-report-jpg-serial-v1';
+  let previous=0;
+  try{previous=Math.max(0,Number(localStorage.getItem(key))||0)}catch(e){throw Error('Browser storage is blocked. Allow site storage to keep serial numbers.');}
+  const next=previous+1;
+  const serial=String(next).padStart(4,'0');
+  const now=new Date();
+  const stamp=[now.getFullYear(),String(now.getMonth()+1).padStart(2,'0'),String(now.getDate()).padStart(2,'0')].join('-')+'_'+String(now.getHours()).padStart(2,'0')+String(now.getMinutes()).padStart(2,'0')+String(now.getSeconds()).padStart(2,'0');
+  const filename=serial+'_'+loc+'_'+stamp+'.jpg';
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),60000);
+  localStorage.setItem(key,String(next));
+  status('JPG report #' + serial + ' downloaded: ' + filename);
  }catch(e){status('Image save failed: '+e.message,true)}
- finally{imageSaving=false;button.disabled=false;button.textContent='📸 Save Full Report'}
+ finally{imageSaving=false;button.disabled=false;button.textContent='📸 Save JPG Report'}
 };
 $('print').onclick=()=>{if(snapshot&&validBins.has(code($('bin').value)))window.print();else status('Choose a bin after importing JSON.',true)};
 $('csv').onclick=()=>{
