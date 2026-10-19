@@ -31,11 +31,11 @@ table{border-collapse:collapse;width:100%;font-size:13px}th,td{border:1px solid 
 <input id="bin" type="text" placeholder="Scan / type bin location, e.g. G-G29-L04" autocomplete="off" autocapitalize="characters" list="bins">
 <datalist id="bins"></datalist>
 <div class="row" style="margin-top:10px">
-<button id="scan">📷 Scan Camera</button>
+<button id="scan">🔤 Scan Printed Bin Code (OCR)</button>
 <button class="green" id="csv">⬇ Excel CSV</button>
 <button class="orange" id="print">🖨 Print</button>
 </div>
-<div id="cameraArea"><video id="video" autoplay muted playsinline></video><button class="alt" id="stop">Stop camera</button></div>
+<div id="cameraArea"><p class="small">Aim the printed code at the center of the camera. OCR may need bright lighting and a steady hand.</p><video id="video" autoplay muted playsinline></video><button class="alt" id="stop">Stop camera</button></div>
 <div class="status" id="scanStatus">Select or scan a bin. Report appears automatically after a valid location is selected.</div>
 </section>
 <section class="panel" id="report"><h2>Stock Report</h2><p class="meta">Import your Inventory JSON to view stock balances.</p></section>
@@ -43,7 +43,7 @@ table{border-collapse:collapse;width:100%;font-size:13px}th,td{border:1px solid 
 <script>
 'use strict';
 const $=id=>document.getElementById(id);
-let snapshot=null, rows=[], validBins=new Set(), detector=null, stream=null, frame=0, scanning=false, busy=false, timer=0, scanCandidate='', scanCount=0;
+let snapshot=null, rows=[], validBins=new Set(), stream=null, frame=0, scanning=false, busy=false, timer=0, scanCandidate='', scanCount=0, ocrWorker=null, scanSession=0;
 const code=x=>String(x??'').trim().toUpperCase();
 const num=x=>Number(x)||0;
 const escapeHTML=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -96,35 +96,76 @@ $('file').addEventListener('change',async e=>{
   const loc=code($('bin').value);if(validBins.has(loc))selectBin(loc);else render('');
  }catch(err){$('importStatus').textContent='Import failed: '+err.message;$('importStatus').className='status error'}
 });
-function stopCamera(){scanCandidate='';scanCount=0;scanning=false;if(frame)cancelAnimationFrame(frame);frame=0;if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}const v=$('video');v.pause();v.srcObject=null;$('cameraArea').style.display='none'}
+function stopCamera(){
+ scanSession++;scanCandidate='';scanCount=0;scanning=false;
+ if(frame)clearTimeout(frame);frame=0;
+ if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}
+ const v=$('video');v.pause();v.srcObject=null;$('cameraArea').style.display='none';
+}
 $('stop').onclick=stopCamera;
+// Extract only the printed location code, never decode any barcode or QR code.
+function ocrCandidates(raw){
+ const text=String(raw||'').toUpperCase().replace(/[‐‑‒–—−_]/g,'-');
+ const found=new Set();
+ const compact=text.replace(/\s+/g,'');
+ for(const str of [text,compact]){
+  const re=/([A-Z])\s*-?\s*([A-Z])\s*([0-9OILSB]{2})\s*-?\s*L\s*([0-9OILSB]{2})/g;
+  let m;while((m=re.exec(str))!==null){
+   const digit=x=>x.replace(/O/g,'0').replace(/[IL]/g,'1').replace(/S/g,'5').replace(/B/g,'8');
+   found.add(m[1]+'-'+m[2]+digit(m[3])+'-L'+digit(m[4]));
+  }
+ }
+ return [...found].filter(x=>/^[A-Z]-[A-Z]\d{2}-L\d{2}$/.test(x)&&validBins.has(x));
+}
+async function loadOCR(){
+ if(window.Tesseract)return;
+ await new Promise((resolve,reject)=>{
+  const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
+  s.onload=resolve;s.onerror=()=>reject(new Error('OCR library could not load. Check internet connection.'));
+  document.head.appendChild(s);
+ });
+}
 $('scan').onclick=async()=>{
  if(!snapshot||!validBins.size){status('Import Inventory JSON before using the camera.',true);return}
  if(scanning){stopCamera();return}
  if(!navigator.mediaDevices?.getUserMedia){status('Camera requires HTTPS and a compatible browser.',true);return}
- if(!('BarcodeDetector' in window)){status('BarcodeDetector unavailable. Use Chrome or a USB/Bluetooth scanner.',true);return}
+ const session=++scanSession;
  try{
-  detector=new BarcodeDetector({formats:['code_128','code_39','qr_code','ean_13','ean_8','itf','data_matrix']});
-  stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}},audio:false});
-  $('video').srcObject=stream;$('cameraArea').style.display='block';await $('video').play();scanning=true;status('Point camera at the bin barcode.');
-  let last=0;
-  async function tick(t){
-   if(!scanning)return;
-   if(!busy&&t-last>200){last=t;busy=true;try{
-    const found=await detector.detect($('video'));
-    if(found.length){
-     const matching=found.map(x=>code(x.rawValue)).find(x=>/^[A-Z]-[A-Z]\d{2}-L\d{2}$/.test(x)&&validBins.has(x));
-     if(matching){
-      if(scanCandidate===matching)scanCount++;else{scanCandidate=matching;scanCount=1}
-      if(scanCount>=2){stopCamera();selectBin(matching);return}
-      status('Confirming bin barcode: '+matching+' (2 scans required)');
-     }else{scanCandidate='';scanCount=0;status('Barcode ignored: not in imported bin locations. Keep scanning.',true)}
+  status('Loading text recognition (OCR) for the first time. Internet required...');
+  await loadOCR();if(session!==scanSession)return;
+  if(!ocrWorker){ocrWorker=await Tesseract.createWorker('eng',1);await ocrWorker.setParameters({tessedit_char_whitelist:'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-',tessedit_pageseg_mode:'7'});}
+  if(session!==scanSession)return;
+  stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:720}},audio:false});
+  const v=$('video');v.srcObject=stream;$('cameraArea').style.display='block';await v.play();scanning=true;
+  status('Point the camera at the PRINTED code (e.g. G-G29-L07), not the barcode. Hold steady.');
+  const canvas=document.createElement('canvas');const ctx=canvas.getContext('2d',{willReadFrequently:true});
+  async function readFrame(){
+   if(!scanning||session!==scanSession)return;
+   try{
+    const w=v.videoWidth,h=v.videoHeight;
+    if(w&&h){
+     // Crop center strip where printed location text should be placed.
+     const cropY=Math.round(h*0.28),cropH=Math.round(h*0.44);
+     canvas.width=1200;canvas.height=Math.round(1200*cropH/w);
+     ctx.filter='contrast(1.8) grayscale(1)';ctx.drawImage(v,0,cropY,w,cropH,0,0,canvas.width,canvas.height);ctx.filter='none';
+     const result=await ocrWorker.recognize(canvas);
+     if(!scanning||session!==scanSession)return;
+     const matches=ocrCandidates(result.data.text);
+     if(matches.length===1){
+      const match=matches[0];
+      if(scanCandidate===match)scanCount++;else{scanCandidate=match;scanCount=1}
+      if(scanCount>=2){stopCamera();selectBin(match);return}
+      status('Printed location detected: '+match+'. Hold steady for confirmation.');
+     }else{
+      // Do not close camera or accept an unrecognized or ambiguous string.
+      status('Looking for printed location code (example G-G29-L07)...');
+     }
     }
-   }catch(e){}finally{busy=false}}
-   if(scanning)frame=requestAnimationFrame(tick);
+   }catch(e){status('Text recognition retrying: '+e.message,true)}
+   if(scanning&&session===scanSession)frame=setTimeout(readFrame,350);
   }
-  frame=requestAnimationFrame(tick);
- }catch(e){stopCamera();status('Unable to open camera: '+e.message,true)}
+  readFrame();
+ }catch(e){stopCamera();status('Unable to start OCR camera: '+e.message,true)}
 };
 $('clear').onclick=()=>{stopCamera();snapshot=null;rows=[];validBins.clear();$('bins').innerHTML='';$('bin').value='';$('importStatus').textContent='Data cleared from this tab.';render('');status('Import JSON to begin.')};
 $('print').onclick=()=>{if(snapshot&&validBins.has(code($('bin').value)))window.print();else status('Choose a bin after importing JSON.',true)};
