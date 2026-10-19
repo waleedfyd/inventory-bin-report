@@ -43,7 +43,7 @@ table{border-collapse:collapse;width:100%;font-size:13px}th,td{border:1px solid 
 <script>
 'use strict';
 const $=id=>document.getElementById(id);
-let snapshot=null, rows=[], validBins=new Set(), detector=null, stream=null, frame=0, scanning=false, busy=false, timer=0;
+let snapshot=null, rows=[], validBins=new Set(), detector=null, stream=null, frame=0, scanning=false, busy=false, timer=0, scanCandidate='', scanCount=0;
 const code=x=>String(x??'').trim().toUpperCase();
 const num=x=>Number(x)||0;
 const escapeHTML=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -96,9 +96,10 @@ $('file').addEventListener('change',async e=>{
   const loc=code($('bin').value);if(validBins.has(loc))selectBin(loc);else render('');
  }catch(err){$('importStatus').textContent='Import failed: '+err.message;$('importStatus').className='status error'}
 });
-function stopCamera(){scanning=false;if(frame)cancelAnimationFrame(frame);frame=0;if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}const v=$('video');v.pause();v.srcObject=null;$('cameraArea').style.display='none'}
+function stopCamera(){scanCandidate='';scanCount=0;scanning=false;if(frame)cancelAnimationFrame(frame);frame=0;if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}const v=$('video');v.pause();v.srcObject=null;$('cameraArea').style.display='none'}
 $('stop').onclick=stopCamera;
 $('scan').onclick=async()=>{
+ if(!snapshot||!validBins.size){status('Import Inventory JSON before using the camera.',true);return}
  if(scanning){stopCamera();return}
  if(!navigator.mediaDevices?.getUserMedia){status('Camera requires HTTPS and a compatible browser.',true);return}
  if(!('BarcodeDetector' in window)){status('BarcodeDetector unavailable. Use Chrome or a USB/Bluetooth scanner.',true);return}
@@ -111,7 +112,14 @@ $('scan').onclick=async()=>{
    if(!scanning)return;
    if(!busy&&t-last>200){last=t;busy=true;try{
     const found=await detector.detect($('video'));
-    if(found.length){const value=found[0].rawValue;stopCamera();selectBin(value);return}
+    if(found.length){
+     const matching=found.map(x=>code(x.rawValue)).find(x=>/^[A-Z]-[A-Z]\d{2}-L\d{2}$/.test(x)&&validBins.has(x));
+     if(matching){
+      if(scanCandidate===matching)scanCount++;else{scanCandidate=matching;scanCount=1}
+      if(scanCount>=2){stopCamera();selectBin(matching);return}
+      status('Confirming bin barcode: '+matching+' (2 scans required)');
+     }else{scanCandidate='';scanCount=0;status('Barcode ignored: not in imported bin locations. Keep scanning.',true)}
+    }
    }catch(e){}finally{busy=false}}
    if(scanning)frame=requestAnimationFrame(tick);
   }
